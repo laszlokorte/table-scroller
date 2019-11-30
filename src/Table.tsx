@@ -3,6 +3,28 @@ import {useReducer, useEffect, useRef, useCallback, useMemo, useLayoutEffect} fr
 
 import styled from 'styled-components';
 
+const CellEl = styled.div`
+        position: absolute;
+        top: 0px;
+        bottom: 0px;
+        background: ${({oddRow, oddColumn}) => oddRow ? (oddColumn ? '#e0e0e0' : '#eee') : (oddColumn ? '#f0f0f0' : '#fff')};
+        z-index:10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+`
+
+const RowEl = styled.div`
+    position: absolute;
+`
+
+const Menu = styled.div`
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 100;
+`
+
 const scan = (arr, init, fn) => {
     let acc = init;
 
@@ -27,23 +49,19 @@ const Overflowable = styled.div`
     overscroll-behavior: contain;
 `
 
-const Cell = ({x, y, children}) => {
-    return <div style={{
-        position: 'absolute',
-        top: `${y}px`,
+const Cell = ({row, column, x, width, children}) => {
+    return <CellEl oddRow={row%2!=0} oddColumn={column%2!=0} style={{
         left: `${x}px`,
-        background: '#fff',
-        zIndex:10,
-        border: '1px solid gray',
+        width: `${width}px`,
 
-    }}>{children}</div>;
+    }}>{children}</CellEl>;
 }
 
-const Row = ({y, children}) => {
-    return <div style={{
-        position: 'absolute',
+const Row = ({row, y, height, children}) => {
+    return <RowEl style={{
         top: `${y}px`,
-    }}>{children}</div>;
+        height: `${height}px`,
+    }}>{children}</RowEl>;
 }
 
 const Box = ({x,y,width,height,children=null}) => {
@@ -78,11 +96,8 @@ const Scroller = ({scrollTop, scrollLeft, children, onResize, onScroll}) => {
                 onResize(el.clientWidth, el.clientHeight);
             }
         }
-
         window.addEventListener('resize', handler)
-
         handler()
-
         return () => {
             window.removeEventListener('resize', handler)
 
@@ -110,11 +125,42 @@ const Scroller = ({scrollTop, scrollLeft, children, onResize, onScroll}) => {
         }
     }, [ref, scrollTop])
 
-    return <Overflowable onScroll={scrollHandler} ref={ref}>{children}</Overflowable>;
+    useEffect(() => {
+        const el : HTMLElement = ref.current;
+        if(el) {
+            el.addEventListener('scroll', scrollHandler, {
+                passive: false,
+                capture: true,
+            });
+            return () => {
+                el.removeEventListener('scroll', scrollHandler, {
+                    capture: true,
+                });
+            }
+        }
+    }, [scrollHandler, ref])
+
+    return <Overflowable ref={ref}>{children}</Overflowable>;
 }
 
 const tableReducer = (state, action) => {
     switch (action.type) {
+        case 'init': {
+            return {
+                ...state,
+                layout: {
+                    defaultWidth: 100,
+                    defaultHeight: 100,
+                    width: Array.from(Array(action.columns)).map((_,c) => null),
+                    height: Array.from(Array(action.rows)).map((_,c) => null),
+                    widthKnown: Array.from(Array(action.columns)).map((_,c) => false),
+                    heightKnown: Array.from(Array(action.rows)).map((_,c) => false),
+                },
+                data: Array.from(Array(action.rows)).map((_,r) =>
+                    Array.from(Array(action.columns)).map((_,c) => `${r},${c}`)
+                )
+            }
+        }
         case 'resize': {
             return {
                 ...state,
@@ -124,23 +170,7 @@ const tableReducer = (state, action) => {
                 }
             }
         }
-        case 'init': {
-            return {
-                ...state,
-                layout: {
-                    defaultWidth: 100,
-                    defaultHeight: 100,
-                    width: Array.from(Array(action.columns)).map((_,c) => null),
-                    height: Array.from(Array(action.rows)).map((_,c) => null),
-                    heightKnown: Array.from(Array(action.columns)).map((_,c) => false),
-                    widthKnown: Array.from(Array(action.rows)).map((_,c) => false),
-                },
-                data: Array.from(Array(action.rows)).map((_,r) =>
-                    Array.from(Array(action.columns)).map((_,c) => `${r},${c}`)
-                )
-            }
-        }
-        case 'scroll':
+        case 'scroll': {
             return {
                 ...state,
                 scrollOffset: {
@@ -148,7 +178,8 @@ const tableReducer = (state, action) => {
                     y: action.y,
                 },
             };
-        case 'scrollToBottom':
+        }
+        case 'scrollToBottom': {
             return {
                 ...state,
                 scrollOffset: {
@@ -156,13 +187,96 @@ const tableReducer = (state, action) => {
                     y: state.layout.height.reduce((acc, h) => acc + (h||state.layout.defaultHeight), 0) - state.viewport.height,
                 },
             };
-        case 'setWidth':
-        case 'setHeight':
-        case 'addRow':
-        case 'addColumn':
-        case 'removeRow':
-        case 'removeColumn':
-            return state;
+        }
+        case 'addRow': {
+            const index = action.index >= 0 ? action.index :
+                state.layout.height.length + action.index + 1;
+            let o = state.scrollOffset.y + state.viewport.height;
+            let r=0;
+            for(;r<index&&o>0;r++) {
+                o -= state.layout.height[r] || state.layout.defaultHeight;
+            }
+            const needShift = r === index && o + state.scrollOffset.y - state.viewport.height > 0;
+            return {
+                ...state,
+                scrollOffset: {
+                    ...state.scrollOffset,
+                    y: needShift ?
+                        state.scrollOffset.y + state.layout.defaultHeight :
+                        state.scrollOffset.y,
+                },
+                layout: {
+                    ...state.layout,
+                    height: [
+                        ...state.layout.height.slice(0, index),
+                        null,
+                        ...state.layout.height.slice(index),
+                    ],
+                    heightKnown: [
+                        ...state.layout.heightKnown.slice(0, index),
+                        false,
+                        ...state.layout.heightKnown.slice(index),
+                    ],
+                },
+                data: [
+                    ...state.data.slice(0, index),
+                    state.layout.width.map(() => 'new Row'),
+                    ...state.data.slice(index),
+                ]
+            }
+        }
+        case 'addColumn': {
+            const index = action.index >= 0 ? action.index :
+                state.layout.width.length + action.index + 1;
+            let o = state.scrollOffset.x + state.viewport.width;
+            let c=0;
+            for(;c<index&&o>0;c++) {
+                o -= state.layout.width[c] || state.layout.defaultWidth;
+            }
+            const needShift = c === index && o + state.scrollOffset.x - state.viewport.width > 0;
+
+            return {
+                ...state,
+                scrollOffset: {
+                    ...state.scrollOffset,
+                    x: needShift ?
+                        state.scrollOffset.x + state.layout.defaultWidth :
+                        state.scrollOffset.x,
+                },
+                layout: {
+                    ...state.layout,
+                    width: [
+                        ...state.layout.width.slice(0, index),
+                        null,
+                        ...state.layout.width.slice(index),
+                    ],
+                    widthKnown: [
+                        ...state.layout.widthKnown.slice(0, index),
+                        false,
+                        ...state.layout.widthKnown.slice(index),
+                    ],
+                },
+                data: state.data.map((cells) => {
+                    return [
+                        ...cells.slice(0, index),
+                        'new Col',
+                        ...cells.slice(index),
+                    ]
+                })
+            }
+        }
+        case 'setWidth': {
+            // TODO: Implement
+        }
+        case 'setHeight': {
+            // TODO: Implement
+        }
+        case 'removeRow': {
+            // TODO: Implement
+        }
+        case 'removeColumn': {
+            // TODO: Implement
+        }
     }
 
     return state;
@@ -198,10 +312,6 @@ const Table = () => {
         })
     }, [dispatch]);
 
-    useEffect(() => {
-        dispatch({type: 'init', rows: 100, columns: 30})
-    }, [])
-
     const onScroll = useCallback((x, y) => {
         dispatch({
             type: 'scroll',
@@ -211,11 +321,12 @@ const Table = () => {
     }, [dispatch]);
 
     useEffect(() => {
-        dispatch({type: 'init', rows: 5000, columns: 100})
+        dispatch({type: 'init', rows: 30, columns: 20})
     }, [])
 
-    const integratedY = useMemo(() => scan(state.layout.height, 0, (acc, h) => acc + (h||state.layout.defaultHeight)), [state.layout.width])
-    const integratedX = useMemo(() => scan(state.layout.width, 0, (acc, w) => acc + (w||state.layout.defaultWidth)), [state.layout.height])
+    const integratedY = useMemo(() => scan(state.layout.height, 0, (acc, h) => acc + (h||state.layout.defaultHeight)), [state.layout.height])
+    const integratedX = useMemo(() => scan(state.layout.width, 0, (acc, w) => acc + (w||state.layout.defaultWidth)), [state.layout.width])
+
 
     const totalWidth = (integratedX[integratedX.length - 1]) || 0
     const totalHeight = (integratedY[integratedY.length - 1]) || 0
@@ -253,32 +364,44 @@ const Table = () => {
     }
 
     const rows = Array.from(Array(lastRow - firstRow)).map((_,r) =>
-        <React.Fragment key={r}>
+        <Row row={firstRow+r} height={state.layout.height[r]||state.layout.defaultHeight} y={integratedY[firstRow + r]} key={r}>
             {
                 Array.from(Array(lastColumn - firstColumn)).map((_,c) =>
-                    <Cell x={integratedX[firstColumn + c]} y={integratedY[firstRow + r]} key={c}>{state.data[firstRow+r][firstColumn+c]}</Cell>
+                    <Cell row={firstRow+r} column={firstColumn+c} width={state.layout.width[c]||state.layout.defaultWidth} x={integratedX[firstColumn + c]} key={c}>{state.data[firstRow+r][firstColumn+c]}</Cell>
                 )
             }
-        </React.Fragment>
+        </Row>
     )
 
     const scrollToBottom = useCallback(() => {
         dispatch({type: 'scrollToBottom'})
     }, [dispatch])
 
-    return <Scroller scrollTop={state.scrollOffset.y} scrollLeft={state.scrollOffset.x} onResize={onResize} onScroll={onScroll}>
-        <div style={{
-            position: 'absolute',
-            left: `${state.scrollOffset.x}px`,
-            top: `${state.scrollOffset.y}px`,
-            background: '#000',
-            color: '#fff',
-            opacity: 0.5,
-            zIndex: 30,
-        }} onClick={scrollToBottom}>
-            {state.viewport.width},{state.viewport.height}<br/>
-            {totalWidth},{totalHeight}
-        </div>
+    const addColumnLeft = useCallback(() => {
+        dispatch({type: 'addColumn', index: 0,})
+    }, [dispatch])
+
+    const addColumnRight = useCallback(() => {
+        dispatch({type: 'addColumn', index: -1,})
+    }, [dispatch])
+
+    const addRowTop = useCallback(() => {
+        dispatch({type: 'addRow', index: 0,})
+    }, [dispatch])
+
+    const addRowBottom = useCallback(() => {
+        dispatch({type: 'addRow', index: -1,})
+    }, [dispatch])
+
+    return <div>
+        <Menu>
+            <button onClick={scrollToBottom}>Scroll to Bottom</button>
+            <button onClick={addRowTop}>Add Row Top</button>
+            <button onClick={addRowBottom}>Add Row Bottom</button>
+            <button onClick={addColumnLeft}>Add Column Left</button>
+            <button onClick={addColumnRight}>Add Column Right</button>
+        </Menu>
+        <Scroller scrollTop={state.scrollOffset.y} scrollLeft={state.scrollOffset.x} onResize={onResize} onScroll={onScroll}>
         <Spacer width={totalWidth} height={totalHeight} />
         {/*<Box
             x={state.scrollOffset.x}
@@ -287,7 +410,8 @@ const Table = () => {
             height={state.viewport.height}>
         </Box>*/}
         {rows}
-    </Scroller>;
+    </Scroller>
+    </div>;
 }
 
 export default Table
